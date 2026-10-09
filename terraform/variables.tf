@@ -1,3 +1,4 @@
+
 variable "aws_region" {
   description = "AWS region for this project."
   type        = string
@@ -23,7 +24,7 @@ variable "instance_name" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "Optional public IPv4 CIDR for SSH, e.g. 203.0.113.10/32. Blank disables SSH."
+  description = "Your public IPv4 address in CIDR notation. Blank disables SSH."
   type        = string
   default     = ""
 }
