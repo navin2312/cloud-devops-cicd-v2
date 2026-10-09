@@ -4,7 +4,7 @@ pipeline {
 
     environment {
         IMAGE_NAME = 'ghcr.io/navin2312/cloud-devops-app'
-        IMAGE_TAG  = 'latest'
+        IMAGE_TAG = 'latest'
     }
 
     stages {
@@ -33,10 +33,27 @@ pipeline {
                     usernameVariable: 'GHCR_USER',
                     passwordVariable: 'GHCR_TOKEN'
                 )]) {
-                    bat 'docker login ghcr.io -u %GHCR_USER% --password-stdin < NUL'
-                    bat 'docker push %IMAGE_NAME%:%IMAGE_TAG%'
+                    powershell '''
+                        $ErrorActionPreference = "Stop"
+                        $env:GHCR_TOKEN | docker login ghcr.io -u $env:GHCR_USER --password-stdin
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "GHCR login failed"
+                        }
+
+                        docker push "$env:IMAGE_NAME`:$env:IMAGE_TAG"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "GHCR push failed"
+                        }
+                    '''
                 }
             }
         }
     }
+
+    post {
+        always {
+            echo 'CI/CD pipeline execution finished.'
+        }
+    }
 }
+
