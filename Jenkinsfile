@@ -1,4 +1,4 @@
-```groovy
+
 pipeline {
     agent any
 
@@ -24,11 +24,7 @@ pipeline {
                         Write-Output "Username is present."
                         Write-Output "Token is present."
 
-                        $env:GHCR_TOKEN |
-                            docker login ghcr.io `
-                                --username $env:GHCR_USER `
-                                --password-stdin
-
+                        $env:GHCR_TOKEN | docker login ghcr.io --username $env:GHCR_USER --password-stdin
                         $loginExitCode = $LASTEXITCODE
 
                         if ($loginExitCode -ne 0) {
@@ -42,4 +38,3 @@ pipeline {
         }
     }
 }
-```
