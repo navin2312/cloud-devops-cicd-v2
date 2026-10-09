@@ -1,0 +1,9 @@
+aws_region    = "ap-south-1"
+aws_profile   = "devops-project"
+instance_type = "t2.micro"
+instance_name = "cloud-devops-cicd"
+
+# Optional: set to your public IPv4 address plus /32 if you need SSH.
+# Example: allowed_ssh_cidr = "203.0.113.10/32"
+# Leave blank to keep SSH closed.
+allowed_ssh_cidr = ""
