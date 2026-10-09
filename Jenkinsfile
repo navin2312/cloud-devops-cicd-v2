@@ -1,8 +1,9 @@
+
 pipeline {
     agent any
 
     stages {
-        stage('Diagnose GitHub Token') {
+        stage('Diagnose GitHub and GHCR') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'ghcr-credentials',
@@ -12,29 +13,37 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = "Stop"
 
+                        if ([string]::IsNullOrWhiteSpace($env:GHCR_USER)) {
+                            throw "GitHub username is missing from Jenkins credentials."
+                        }
+
+                        if ([string]::IsNullOrWhiteSpace($env:GHCR_TOKEN)) {
+                            throw "GitHub token is missing from Jenkins credentials."
+                        }
+
                         $headers = @{
                             Authorization = "Bearer $env:GHCR_TOKEN"
                             Accept = "application/vnd.github+json"
                             "User-Agent" = "Jenkins-GHCR-Diagnostic"
                         }
 
-                        try {
-                            $response = Invoke-WebRequest `
-                                -Uri "https://api.github.com/user" `
-                                -Headers $headers `
-                                -UseBasicParsing
+                        $response = Invoke-WebRequest `
+                            -Uri "https://api.github.com/user" `
+                            -Headers $headers `
+                            -UseBasicParsing
 
-                            Write-Output "GitHub API status: $([int]$response.StatusCode)"
-                            Write-Output "GitHub token is accepted by the API."
+                        $user = $response.Content | ConvertFrom-Json
+
+                        Write-Output "Authenticated GitHub account: $($user.login)"
+
+                        if ($user.login -ne $env:GHCR_USER) {
+                            throw "Jenkins credential username does not match the authenticated GitHub account."
                         }
-                        catch {
-                            $status = 0
-                            if ($_.Exception.Response) {
-                                $status = [int]$_.Exception.Response.StatusCode
-                            }
 
-                            Write-Output "GitHub API status: $status"
-                            throw "GitHub token validation failed."
+                        if ($response.Headers["X-OAuth-Scopes"]) {
+                            Write-Output "Token scopes: $($response.Headers['X-OAuth-Scopes'])"
+                        } else {
+                            Write-Output "Token scopes are not reported by this API response."
                         }
 
                         $env:GHCR_TOKEN |
@@ -42,11 +51,13 @@ pipeline {
                                 --username $env:GHCR_USER `
                                 --password-stdin
 
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "GHCR login failed."
+                        $loginExitCode = $LASTEXITCODE
+
+                        if ($loginExitCode -ne 0) {
+                            throw "GHCR login failed with exit code $loginExitCode."
                         }
 
-                        Write-Output "GHCR login succeeded."
+                        Write-Output "GHCR authentication succeeded."
                     '''
                 }
             }
