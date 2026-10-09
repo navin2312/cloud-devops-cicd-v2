@@ -3,7 +3,8 @@ pipeline {
     agent any
 
     options {
-        disableConcurrentBuilds()
+        skipDefaultCheckout(true)
+        timestamps()
     }
 
     environment {
@@ -12,37 +13,43 @@ pipeline {
     }
 
     stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.IMAGE_TAG = bat(
+                        script: '@git rev-parse --short=7 HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+                echo 'Source code checkout completed.'
+            }
+        }
+
         stage('Validate Environment') {
             steps {
                 powershell '''
-                    $ErrorActionPreference = "Continue"
+                    $ErrorActionPreference = "Stop"
 
-                    if (!(Test-Path "app/Dockerfile")) {
-                        throw "Missing app/Dockerfile"
+                    Write-Output "Checking Docker..."
+
+                    docker version
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Docker is unavailable."
                     }
 
-                    if (!(Test-Path "app/index.html")) {
-                        throw "Missing app/index.html"
+                    $osType = docker info --format '{{.OSType}}'
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Unable to query Docker engine."
                     }
 
-                    $env:DOCKER_HOST = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+                    Write-Output "Docker OS: $osType"
 
-                    Write-Output "Checking Docker engine..."
-
-                    $info = docker info --format '{{.OSType}}' 2>&1
-                    $dockerExitCode = $LASTEXITCODE
-
-                    $info | ForEach-Object { Write-Output "$_" }
-
-                    if ($dockerExitCode -ne 0) {
-                        throw "Cannot connect to Docker Desktop. Check that Docker Desktop is running and Jenkins can access its named pipe."
+                    if ($osType.Trim() -ne "linux") {
+                        throw "Docker Desktop must use Linux containers."
                     }
 
-                    if (($info -join "").Trim() -ne "linux") {
-                        throw "Docker is not using Linux containers."
-                    }
-
-                    Write-Output "Docker engine is ready."
+                    Write-Output "Environment validation succeeded."
                 '''
             }
         }
@@ -55,21 +62,21 @@ pipeline {
                     passwordVariable: 'GHCR_TOKEN'
                 )]) {
                     powershell '''
-                        $ErrorActionPreference = "Continue"
+                        $ErrorActionPreference = "Stop"
 
                         if ([string]::IsNullOrWhiteSpace($env:GHCR_USER)) {
-                            throw "Jenkins GitHub username is empty."
+                            throw "GitHub username is empty."
                         }
 
                         if ([string]::IsNullOrWhiteSpace($env:GHCR_TOKEN)) {
-                            throw "Jenkins GitHub token is empty."
+                            throw "GitHub token is empty."
                         }
 
                         if ($env:GHCR_USER -ne "navin2312") {
                             throw "Unexpected GitHub username in Jenkins credentials."
                         }
 
-                        # Verify the PAT and the account it authenticates.
+                        # Verify the token's GitHub account.
                         $headers = @{
                             Authorization = "Bearer $env:GHCR_TOKEN"
                             Accept = "application/vnd.github+json"
@@ -85,60 +92,40 @@ pipeline {
                             $account = $response.Content | ConvertFrom-Json
                         }
                         catch {
-                            throw "GitHub API rejected the Jenkins token or could not be reached."
+                            throw "GitHub API authentication failed or the API is unreachable."
                         }
-
-                        Write-Output "Authenticated GitHub account: $($account.login)"
 
                         if ($account.login -ne $env:GHCR_USER) {
-                            throw "GitHub account does not match the Jenkins username."
+                            throw "Token account does not match the configured GitHub username."
                         }
 
-                        # Confirm required scopes when GitHub reports them.
-                        $scopeHeader = [string]$response.Headers["X-OAuth-Scopes"]
+                        Write-Output "GitHub account verification succeeded."
 
-                        if (-not [string]::IsNullOrWhiteSpace($scopeHeader)) {
-                            $scopes = @($scopeHeader -split ',\\s*')
-
-                            if (($scopes -notcontains "read:packages") -or
-                                ($scopes -notcontains "write:packages")) {
-                                throw "PAT needs both read:packages and write:packages scopes."
-                            }
-
-                            Write-Output "Required package scopes are present."
-                        }
-                        else {
-                            Write-Output "GitHub did not report OAuth scopes; testing registry login directly."
-                        }
-
-                        # Use an isolated Docker config to avoid stale credentials
-                        # or a per-user credential-store configuration.
-                        $env:DOCKER_HOST = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+                        # Use an isolated Docker credential configuration.
                         $dockerConfig = Join-Path $env:WORKSPACE ".docker-ci"
 
                         if (Test-Path $dockerConfig) {
-                            Remove-Item -LiteralPath $dockerConfig -Recurse -Force
+                            Remove-Item -LiteralPath $dockerConfig `
+                                -Recurse -Force
                         }
 
-                        New-Item -ItemType Directory -Path $dockerConfig -Force | Out-Null
+                        New-Item -ItemType Directory `
+                            -Path $dockerConfig -Force | Out-Null
+
                         $env:DOCKER_CONFIG = $dockerConfig
 
-                        Write-Output "Authenticating to GitHub Container Registry..."
+                        Write-Output "Logging in to GHCR..."
 
-                        $loginOutput = $env:GHCR_TOKEN |
+                        $env:GHCR_TOKEN |
                             docker login ghcr.io `
                                 --username $env:GHCR_USER `
-                                --password-stdin 2>&1
+                                --password-stdin
 
-                        $loginExitCode = $LASTEXITCODE
-
-                        $loginOutput | ForEach-Object { Write-Output "$_" }
-
-                        if ($loginExitCode -ne 0) {
-                            throw "GHCR authentication failed. Check the PAT permissions and registry access."
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "GHCR login failed. Check the token and registry permissions."
                         }
 
-                        Write-Output "GHCR authentication succeeded."
+                        Write-Output "GHCR login succeeded."
                     '''
                 }
             }
@@ -147,38 +134,22 @@ pipeline {
         stage('Build Image') {
             steps {
                 powershell '''
-                    $ErrorActionPreference = "Continue"
-                    $env:DOCKER_HOST = 'npipe:////./pipe/dockerDesktopLinuxEngine'
-                    $env:DOCKER_CONFIG = Join-Path $env:WORKSPACE ".docker-ci"
+                    $ErrorActionPreference = "Stop"
 
-                    $commitOutput = git rev-parse --short=12 HEAD
-                    $gitExitCode = $LASTEXITCODE
+                    $image = "$env:IMAGE_NAME"
 
-                    if ($gitExitCode -ne 0) {
-                        throw "Could not determine the Git commit."
-                    }
+                    Write-Output "Building image tag: $env:IMAGE_TAG"
 
-                    $commit = ($commitOutput | Out-String).Trim()
-                    $image = $env:IMAGE_NAME
-                    $commitTag = "${image}:${commit}"
-                    $latestTag = "${image}:latest"
+                    docker build `
+                        -t "${image}:$env:IMAGE_TAG" `
+                        -t "${image}:latest" `
+                        -f app/Dockerfile app
 
-                    Write-Output "Building $commitTag"
-
-                    $buildOutput = docker build --pull `
-                        --file app/Dockerfile `
-                        --tag $commitTag `
-                        --tag $latestTag `
-                        app 2>&1
-
-                    $buildExitCode = $LASTEXITCODE
-                    $buildOutput | ForEach-Object { Write-Output "$_" }
-
-                    if ($buildExitCode -ne 0) {
+                    if ($LASTEXITCODE -ne 0) {
                         throw "Docker image build failed."
                     }
 
-                    Write-Output "Image build succeeded."
+                    Write-Output "Docker image build succeeded."
                 '''
             }
         }
@@ -186,35 +157,24 @@ pipeline {
         stage('Push Image') {
             steps {
                 powershell '''
-                    $ErrorActionPreference = "Continue"
-                    $env:DOCKER_HOST = 'npipe:////./pipe/dockerDesktopLinuxEngine'
-                    $env:DOCKER_CONFIG = Join-Path $env:WORKSPACE ".docker-ci"
+                    $ErrorActionPreference = "Stop"
 
-                    $commitOutput = git rev-parse --short=12 HEAD
-                    $gitExitCode = $LASTEXITCODE
+                    $image = "$env:IMAGE_NAME"
 
-                    if ($gitExitCode -ne 0) {
-                        throw "Could not determine the Git commit."
+                    Write-Output "Pushing commit-tagged image..."
+
+                    docker push "${image}:$env:IMAGE_TAG"
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to push commit-tagged image."
                     }
 
-                    $commit = ($commitOutput | Out-String).Trim()
-                    $image = $env:IMAGE_NAME
-                    $tags = @(
-                        "${image}:${commit}",
-                        "${image}:latest"
-                    )
+                    Write-Output "Pushing latest image..."
 
-                    foreach ($imageTag in $tags) {
-                        Write-Output "Pushing $imageTag"
+                    docker push "${image}:latest"
 
-                        $pushOutput = docker push $imageTag 2>&1
-                        $pushExitCode = $LASTEXITCODE
-
-                        $pushOutput | ForEach-Object { Write-Output "$_" }
-
-                        if ($pushExitCode -ne 0) {
-                            throw "Failed to push $imageTag. Check GHCR package permissions."
-                        }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to push latest image."
                     }
 
                     Write-Output "Both image tags were pushed successfully."
@@ -225,23 +185,34 @@ pipeline {
 
     post {
         always {
-            powershell '''
-                $ErrorActionPreference = "Continue"
+            withCredentials([usernamePassword(
+                credentialsId: 'ghcr-credentials',
+                usernameVariable: 'GHCR_USER',
+                passwordVariable: 'GHCR_TOKEN'
+            )]) {
+                powershell '''
+                    $dockerConfig = Join-Path $env:WORKSPACE ".docker-ci"
 
-                $env:DOCKER_HOST = 'npipe:////./pipe/dockerDesktopLinuxEngine'
-                $dockerConfig = Join-Path $env:WORKSPACE ".docker-ci"
-                $env:DOCKER_CONFIG = $dockerConfig
+                    if (Test-Path $dockerConfig) {
+                        $env:DOCKER_CONFIG = $dockerConfig
+                        docker logout ghcr.io 2>$null | Out-Null
 
-                if (Test-Path $dockerConfig) {
-                    # Remove the temporary registry login and its local config.
-                    $null = docker logout ghcr.io 2>&1
+                        Remove-Item -LiteralPath $dockerConfig `
+                            -Recurse -Force -ErrorAction SilentlyContinue
+                    }
 
-                    Remove-Item -LiteralPath $dockerConfig `
-                        -Recurse -Force -ErrorAction SilentlyContinue
-                }
+                    Write-Output "Docker credential cleanup completed."
+                '''
+            }
+        }
 
-                Write-Output "Temporary Docker credentials cleaned up."
-            '''
+        success {
+            echo 'CI/CD pipeline completed successfully.'
+            echo 'The commit-tagged and latest images are available in GHCR.'
+        }
+
+        failure {
+            echo 'CI/CD pipeline failed. Check the first failing stage in Console Output.'
         }
     }
 }
