@@ -1,9 +1,8 @@
-
 pipeline {
     agent any
 
     stages {
-        stage('Test GHCR Login') {
+        stage('Diagnose GitHub Token') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'ghcr-credentials',
@@ -11,24 +10,40 @@ pipeline {
                     passwordVariable: 'GHCR_TOKEN'
                 )]) {
                     powershell '''
-                        $ErrorActionPreference = "Continue"
+                        $ErrorActionPreference = "Stop"
 
-                        if ([string]::IsNullOrWhiteSpace($env:GHCR_USER)) {
-                            throw "GHCR username is empty"
+                        $headers = @{
+                            Authorization = "Bearer $env:GHCR_TOKEN"
+                            Accept = "application/vnd.github+json"
+                            "User-Agent" = "Jenkins-GHCR-Diagnostic"
                         }
 
-                        if ([string]::IsNullOrWhiteSpace($env:GHCR_TOKEN)) {
-                            throw "GHCR token is empty"
+                        try {
+                            $response = Invoke-WebRequest `
+                                -Uri "https://api.github.com/user" `
+                                -Headers $headers `
+                                -UseBasicParsing
+
+                            Write-Output "GitHub API status: $([int]$response.StatusCode)"
+                            Write-Output "GitHub token is accepted by the API."
+                        }
+                        catch {
+                            $status = 0
+                            if ($_.Exception.Response) {
+                                $status = [int]$_.Exception.Response.StatusCode
+                            }
+
+                            Write-Output "GitHub API status: $status"
+                            throw "GitHub token validation failed."
                         }
 
-                        Write-Output "Username is present."
-                        Write-Output "Token is present."
+                        $env:GHCR_TOKEN |
+                            docker login ghcr.io `
+                                --username $env:GHCR_USER `
+                                --password-stdin
 
-                        $env:GHCR_TOKEN | docker login ghcr.io --username $env:GHCR_USER --password-stdin
-                        $loginExitCode = $LASTEXITCODE
-
-                        if ($loginExitCode -ne 0) {
-                            throw "Docker login failed with exit code $loginExitCode"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "GHCR login failed."
                         }
 
                         Write-Output "GHCR login succeeded."
