@@ -26,7 +26,7 @@ pipeline {
             }
         }
 
-        stage('Diagnose GHCR Credentials') {
+        stage('Push to GHCR') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'ghcr-credentials',
@@ -34,17 +34,20 @@ pipeline {
                     passwordVariable: 'GHCR_TOKEN'
                 )]) {
                     powershell '''
-                        if ([string]::IsNullOrWhiteSpace($env:GHCR_USER)) {
-                            throw "GHCR username is empty"
+                        $ErrorActionPreference = "Stop"
+
+                        $env:GHCR_TOKEN |
+                            docker login ghcr.io -u $env:GHCR_USER --password-stdin
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "GHCR login failed"
                         }
 
-                        if ([string]::IsNullOrWhiteSpace($env:GHCR_TOKEN)) {
-                            throw "GHCR token is empty"
-                        }
+                        docker push "$env:IMAGE_NAME`:$env:IMAGE_TAG"
 
-                        Write-Output "GHCR username is present."
-                        Write-Output "GHCR token is present."
-                        Write-Output "Token length: $($env:GHCR_TOKEN.Length)"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "GHCR push failed"
+                        }
                     '''
                 }
             }
@@ -53,7 +56,7 @@ pipeline {
 
     post {
         always {
-            echo 'CI/CD pipeline diagnostic finished.'
+            echo 'CI/CD pipeline execution finished.'
         }
     }
 }
