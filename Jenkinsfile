@@ -1,4 +1,4 @@
-
+```groovy
 pipeline {
     agent any
 
@@ -11,17 +11,28 @@ pipeline {
                     passwordVariable: 'GHCR_TOKEN'
                 )]) {
                     powershell '''
-                        $ErrorActionPreference = "Stop"
+                        $ErrorActionPreference = "Continue"
+
+                        if ([string]::IsNullOrWhiteSpace($env:GHCR_USER)) {
+                            throw "GHCR username is empty"
+                        }
 
                         if ([string]::IsNullOrWhiteSpace($env:GHCR_TOKEN)) {
                             throw "GHCR token is empty"
                         }
 
-                        $env:GHCR_TOKEN |
-                            docker login ghcr.io -u $env:GHCR_USER --password-stdin
+                        Write-Output "Username is present."
+                        Write-Output "Token is present."
 
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "GHCR login failed"
+                        $env:GHCR_TOKEN |
+                            docker login ghcr.io `
+                                --username $env:GHCR_USER `
+                                --password-stdin
+
+                        $loginExitCode = $LASTEXITCODE
+
+                        if ($loginExitCode -ne 0) {
+                            throw "Docker login failed with exit code $loginExitCode"
                         }
 
                         Write-Output "GHCR login succeeded."
@@ -31,3 +42,4 @@ pipeline {
         }
     }
 }
+```
