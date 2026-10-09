@@ -3,7 +3,7 @@ pipeline {
     agent any
 
     stages {
-        stage('Diagnose GitHub and GHCR') {
+        stage('Diagnose GHCR Authentication') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'ghcr-credentials',
@@ -14,11 +14,25 @@ pipeline {
                         $ErrorActionPreference = "Stop"
 
                         if ([string]::IsNullOrWhiteSpace($env:GHCR_USER)) {
-                            throw "GitHub username is missing from Jenkins credentials."
+                            throw "Jenkins username is missing."
                         }
 
                         if ([string]::IsNullOrWhiteSpace($env:GHCR_TOKEN)) {
-                            throw "GitHub token is missing from Jenkins credentials."
+                            throw "Jenkins token is missing."
+                        }
+
+                        $sha = [Security.Cryptography.SHA256]::Create()
+
+                        try {
+                            $bytes = [Text.Encoding]::UTF8.GetBytes($env:GHCR_TOKEN)
+                            $fingerprint = [BitConverter]::ToString(
+                                $sha.ComputeHash($bytes)
+                            ).Replace("-", "").Substring(0, 12)
+
+                            Write-Output "Jenkins PAT fingerprint: $fingerprint"
+                        }
+                        finally {
+                            $sha.Dispose()
                         }
 
                         $headers = @{
@@ -33,18 +47,13 @@ pipeline {
                             -UseBasicParsing
 
                         $user = $response.Content | ConvertFrom-Json
-
                         Write-Output "Authenticated GitHub account: $($user.login)"
 
                         if ($user.login -ne $env:GHCR_USER) {
-                            throw "Jenkins credential username does not match the authenticated GitHub account."
+                            throw "The Jenkins username does not match the GitHub account."
                         }
 
-                        if ($response.Headers["X-OAuth-Scopes"]) {
-                            Write-Output "Token scopes: $($response.Headers['X-OAuth-Scopes'])"
-                        } else {
-                            Write-Output "Token scopes are not reported by this API response."
-                        }
+                        $ErrorActionPreference = "Continue"
 
                         $env:GHCR_TOKEN |
                             docker login ghcr.io `
@@ -57,7 +66,7 @@ pipeline {
                             throw "GHCR login failed with exit code $loginExitCode."
                         }
 
-                        Write-Output "GHCR authentication succeeded."
+                        Write-Output "GHCR login succeeded."
                     '''
                 }
             }
