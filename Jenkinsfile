@@ -9,7 +9,7 @@ pipeline {
     }
 
     environment {
-        EC2_HOST = '13.204.79.39'
+        EC2_HOST = '13.232.248.100'
         EC2_USER = 'ec2-user'
         SSH_CREDENTIALS = 'ec2-deploy-key'
         APP_NAME = 'cloud-devops-app'
